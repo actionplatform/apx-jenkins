@@ -239,3 +239,15 @@ class Reading(unittest.TestCase):
 
         self.assertEqual(fake.roles["globalRoles"]["read"]["sids"], ["ben"])
         self.assertEqual(fake.writes()[-1][1].rsplit("/", 1)[-1], "assignRole")
+
+
+class Guard(unittest.TestCase):
+    def test_accounts_compare_without_case(self):
+        provider = JenkinsProvider("https://j", "u", "t", http=FakeJenkins())
+        live = [Grant("jenkins", "Ana", "global", "admin")]
+        op = Op("remove", Grant("jenkins", "ana", "global", "admin"))
+
+        refused = provider.guard([op], live)
+
+        self.assertEqual(list(refused), [op])
+        self.assertIn("last global admin", refused[op])

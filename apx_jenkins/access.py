@@ -132,13 +132,15 @@ class JenkinsProvider(AccessProvider):
 
     def guard(self, ops: list[Op], live: list[Grant]) -> dict[Op, str]:
         admins = {
-            g.account for g in live if g.resource == "global" and g.level == "admin"
+            g.account.lower()
+            for g in live
+            if g.resource == "global" and g.level == "admin"
         }
         losing = {
-            op.grant.account
+            op.grant.account.lower()
             for op in ops
             if op.grant.resource == "global"
-            and op.grant.account in admins
+            and op.grant.account.lower() in admins
             and (op.action == "remove" or op.grant.level != "admin")
         }
 
@@ -146,7 +148,7 @@ class JenkinsProvider(AccessProvider):
             return {
                 op: f"jenkins: {op.grant.account} is the last global admin"
                 for op in ops
-                if op.grant.resource == "global" and op.grant.account in losing
+                if op.grant.resource == "global" and op.grant.account.lower() in losing
             }
 
         return {}
