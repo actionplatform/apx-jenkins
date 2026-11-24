@@ -3,12 +3,6 @@
 [Jenkins](https://www.jenkins.io) for [Action Platform](https://github.com/actionplatform/action-platform): access management through Role-based Authorization Strategy, and read-only tools for jobs, builds and the build queue.
 
 
-Until `apx-jenkins` is on PyPI and in the plugin index, install it from its release tag into the CLI's environment (`action-platform plugin install jenkins` works once it is):
-
-```bash
-pip install "apx-jenkins @ git+https://github.com/actionplatform/apx-jenkins@v0.1.0"
-```
-
 The access capability runs where the core runs service access: on a hosted platform whose API image carries this plugin, with the options filled under **Plugins** for the organization. The tools and commands run on the machine that installed it.
 
 ## Install
