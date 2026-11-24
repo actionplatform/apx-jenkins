@@ -2,7 +2,6 @@
 
 [Jenkins](https://www.jenkins.io) for [Action Platform](https://github.com/actionplatform/action-platform): access management through Role-based Authorization Strategy, and read-only tools for jobs, builds and the build queue.
 
-
 The access capability runs where the core runs service access: on a hosted platform whose API image carries this plugin, with the options filled under **Plugins** for the organization. The tools and commands run on the machine that installed it.
 
 ## Install
