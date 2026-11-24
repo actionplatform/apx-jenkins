@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Rules an AI agent (or a new contributor) follows in this repository — and in any `apx-<slug>` started from it.
+Rules an AI agent (or a new contributor) follows in this repository.
 
 ## What this is
 
