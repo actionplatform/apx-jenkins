@@ -1,28 +1,24 @@
-"""Reads on a Jenkins controller through its JSON API: jobs of a folder, one build with the tail of its console, the queue."""
+"""The connection to a Jenkins controller — JSON, consoles from an offset, files as they arrive — and the jobs of a folder through its JSON API."""
 
 from __future__ import annotations
 
 import base64
+import copy
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
+from action_platform.core import destination
 from action_platform.core.exception import ActionPlatformError
 from action_platform.core.service_access import Http
 
-from apx_jenkins.models import Build, Job, QueueItem
+from apx_jenkins.models import Job
 
-LAST = (
-    "number,result,building,timestamp,duration,url,fullDisplayName,"
-    "actions[causes[shortDescription],lastBuiltRevision[SHA1,branch[name]]]"
-)
 LAST_BUILD = "lastBuild[number,result,building,timestamp,duration]"
 JOB = f"name,fullName,_class,color,url,{LAST_BUILD}"
 JOBS = f"{JOB},jobs[{JOB}]"
-QUEUE = "items[id,why,inQueueSince,blocked,stuck,buildable,task[name,fullName,url]]"
 STATUS = {
     "blue": "success",
     "red": "failed",
@@ -32,7 +28,6 @@ STATUS = {
     "notbuilt": "not built",
     "grey": "not built",
 }
-MAX_LINES = 2000
 
 
 class JenkinsError(ActionPlatformError):
@@ -40,30 +35,52 @@ class JenkinsError(ActionPlatformError):
 
 
 class JenkinsHttp(Http):
-    def lines(self, path: str, limit: int) -> tuple[list[str], int]:
-        """The last `limit` lines of a text answer and how many it had."""
+    def with_headers(self, extra: dict[str, str]) -> "JenkinsHttp":
+        """The same connection with `extra` headers on every call — a crumb on a POST."""
+        other = copy.copy(self)
+        other.headers = {**self.headers, **extra}
+
+        return other
+
+    def _open(self, path: str, query: Optional[dict[str, Any]] = None):
         req = urllib.request.Request(
-            self.url(path),
+            self.url(path, query),
             headers={"user-agent": "action-platform (jenkins)", **self.headers},
         )
-        tail: deque[str] = deque(maxlen=limit)
-        total = 0
 
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as res:
-                for raw in res:
-                    total += 1
-                    tail.append(raw.decode(errors="replace").rstrip("\r\n"))
+            return destination.urlopen(req, timeout=self.timeout)
         except urllib.error.HTTPError as e:
             raise JenkinsError(
                 f"jenkins: GET {urllib.parse.urlsplit(self.url(path)).path} answered {e.code}"
             ) from e
+        except destination.DestinationError as e:
+            raise JenkinsError(f"jenkins: {e}") from e
         except urllib.error.URLError as e:
             raise JenkinsError(
                 f"jenkins: cannot reach {urllib.parse.urlsplit(self.base).netloc}: {e.reason}"
             ) from e
 
-        return list(tail), total
+    def progressive(self, path: str, start: int) -> tuple[str, int, bool]:
+        """A console from byte `start`: its text, the offset to resume from (`X-Text-Size`) and whether the build still writes (`X-More-Data`)."""
+        with self._open(path, {"start": start}) as res:
+            charset = res.headers.get_content_charset() or "utf-8"
+            text = res.read().decode(charset, errors="replace")
+            size = int(res.headers.get("X-Text-Size") or start + len(text.encode()))
+            more = (res.headers.get("X-More-Data") or "").lower() == "true"
+
+        return text, size, more
+
+    def stream(self, path: str, chunk: int = 65536) -> Iterator[bytes]:
+        """A file's bytes as they arrive."""
+        with self._open(path) as res:
+            while True:
+                block = res.read(chunk)
+
+                if not block:
+                    return
+
+                yield block
 
 
 def connection(url: str, user: str, token: str) -> JenkinsHttp:
@@ -119,72 +136,6 @@ class Jenkins:
         items = data["jobs"] if "jobs" in data else [data]
 
         return [_job(i) for i in items]
-
-    def build(self, job: str, number: int = 0, lines: int = 100) -> Build:
-        if not job.strip("/"):
-            raise JenkinsError("jenkins: name the job, as folder/job")
-
-        path = job_path(job)
-        ref = str(number) if number > 0 else "lastBuild"
-        data = self._get(f"{path}/{ref}", LAST, f"build {ref} of {job!r}")
-        n = int(data["number"])
-        wanted = max(0, min(lines, MAX_LINES))
-        console, total = (
-            self.http.lines(f"{path}/{n}/consoleText", wanted) if wanted else ([], 0)
-        )
-        causes: list[str] = []
-        revision = branch = None
-
-        for action in data.get("actions") or []:
-            causes += [
-                c["shortDescription"]
-                for c in action.get("causes") or []
-                if c.get("shortDescription")
-            ]
-            found = action.get("lastBuiltRevision")
-
-            if found and not revision:
-                revision = found.get("SHA1")
-                names = found.get("branch") or []
-                branch = names[0].get("name") if names else None
-
-        building = bool(data.get("building"))
-
-        return Build(
-            job=job.strip("/"),
-            number=n,
-            name=data.get("fullDisplayName") or f"#{n}",
-            result="BUILDING" if building else data.get("result") or "UNKNOWN",
-            building=building,
-            started_at=moment(data.get("timestamp")),
-            duration_s=None if building else seconds(data.get("duration")),
-            causes=causes,
-            branch=branch,
-            revision=revision,
-            url=data.get("url") or "",
-            console=console,
-            console_lines=total,
-            console_truncated=total > len(console),
-        )
-
-    def queue(self) -> list[QueueItem]:
-        data = self._get("/queue", QUEUE, "the queue")
-
-        return [
-            QueueItem(
-                id=int(i["id"]),
-                job=(i.get("task") or {}).get("fullName")
-                or (i.get("task") or {}).get("name")
-                or "",
-                why=i.get("why"),
-                since=moment(i.get("inQueueSince")),
-                blocked=bool(i.get("blocked")),
-                stuck=bool(i.get("stuck")),
-                buildable=bool(i.get("buildable")),
-                url=(i.get("task") or {}).get("url"),
-            )
-            for i in data.get("items") or []
-        ]
 
 
 def _job(item: dict[str, Any]) -> Job:

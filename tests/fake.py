@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 from typing import Any
 
@@ -14,6 +15,8 @@ FOLDER = "com.cloudbees.hudson.plugins.folder.Folder"
 PIPELINE = "org.jenkinsci.plugins.workflow.job.WorkflowJob"
 RUN = "org.jenkinsci.plugins.workflow.job.WorkflowRun"
 BASE = "https://jenkins.example.com"
+HIDDEN = {"console", "stages", "tests", "files", "inputs", "nodes"}
+RANGE = re.compile(r"\{(\d+),(\d+)\}$")
 
 
 class FakeJenkins(JenkinsHttp):
@@ -25,6 +28,8 @@ class FakeJenkins(JenkinsHttp):
         self.calls: list[tuple[str, str, Any]] = []
         self.items: dict[str, dict] = {}
         self.queued: list[dict] = []
+        self.waiting: dict[int, dict] = {}
+        self.computers: list[dict] = []
         self.status = 0
         self.last_query = ""
 
@@ -59,13 +64,25 @@ class FakeJenkins(JenkinsHttp):
         duration: int = 99179,
         sha: str = "96a8ee275617d5b6f63a7aa834a6c23634c7ee6b",
         branch: str = "refs/remotes/origin/main",
+        params: dict[str, str] | None = None,
+        changes: list[tuple[str, str, str]] = (),
     ) -> None:
         actions: list[dict] = [
             {
                 "_class": "hudson.model.CauseAction",
-                "causes": [{"_class": "x", "shortDescription": c} for c in causes],
+                "causes": [self.cause(c) for c in causes],
             },
-            {"_class": "hudson.model.ParametersAction"},
+            {
+                "_class": "hudson.model.ParametersAction",
+                "parameters": [
+                    {
+                        "_class": "hudson.model.StringParameterValue",
+                        "name": k,
+                        "value": v,
+                    }
+                    for k, v in (params or {}).items()
+                ],
+            },
             {},
             {
                 "_class": "hudson.plugins.git.util.BuildData",
@@ -84,8 +101,189 @@ class FakeJenkins(JenkinsHttp):
             "result": result,
             "timestamp": timestamp,
             "url": f"{BASE}/{self.path(job)}/{number}/",
+            "changeSets": [
+                {
+                    "_class": "hudson.plugins.git.GitChangeSetList",
+                    "kind": "git",
+                    "items": [
+                        {
+                            "_class": "hudson.plugins.git.GitChangeSet",
+                            "commitId": commit,
+                            "msg": msg,
+                            "author": {"fullName": author},
+                        }
+                        for commit, author, msg in changes
+                    ],
+                }
+            ]
+            if changes
+            else [],
+            "artifacts": [],
             "console": console,
+            "stages": [],
+            "tests": None,
+            "files": {},
+            "inputs": [],
+            "nodes": {},
         }
+
+    @staticmethod
+    def cause(description: str) -> dict:
+        if description.startswith("Started by user "):
+            user = description.removeprefix("Started by user ")
+
+            return {
+                "_class": "hudson.model.Cause$UserIdCause",
+                "shortDescription": description,
+                "userId": user,
+                "userName": user,
+            }
+
+        return {"_class": "hudson.model.Cause", "shortDescription": description}
+
+    def build_of(self, job: str, number: int) -> dict:
+        return self.items[job]["builds"][number]
+
+    def stage(
+        self,
+        job: str,
+        number: int,
+        id: str,
+        name: str,
+        status: str,
+        log: str = "",
+        started: int = 1795502401000,
+        duration: int = 1200,
+    ) -> None:
+        build = self.build_of(job, number)
+        build["stages"].append(
+            {
+                "_links": {
+                    "self": {
+                        "href": f"/{self.path(job)}/{number}/execution/node/{id}/wfapi/describe"
+                    }
+                },
+                "id": id,
+                "name": name,
+                "execNode": "",
+                "status": status,
+                "startTimeMillis": started,
+                "durationMillis": duration,
+                "pauseDurationMillis": 0,
+            }
+        )
+        build["nodes"][id] = {"status": status, "log": log}
+
+    def report(
+        self, job: str, number: int, passed: int, skipped: int, failures: list[dict]
+    ) -> None:
+        self.build_of(job, number)["tests"] = {
+            "_class": "hudson.tasks.junit.TestResult",
+            "duration": 1.5,
+            "empty": False,
+            "failCount": len(failures),
+            "passCount": passed,
+            "skipCount": skipped,
+            "suites": [
+                {
+                    "_class": "hudson.tasks.junit.SuiteResult",
+                    "name": "suite",
+                    "cases": [
+                        {
+                            "_class": "hudson.tasks.junit.CaseResult",
+                            "className": "app.tests.Ok",
+                            "name": "test_passes",
+                            "status": "PASSED",
+                            "errorDetails": None,
+                            "errorStackTrace": None,
+                        },
+                        *(
+                            {
+                                "_class": "hudson.tasks.junit.CaseResult",
+                                "status": "FAILED",
+                                **f,
+                            }
+                            for f in failures
+                        ),
+                    ],
+                }
+            ],
+        }
+
+    def archive(self, job: str, number: int, path: str, content: bytes) -> None:
+        build = self.build_of(job, number)
+        build["artifacts"].append(
+            {
+                "displayPath": path.rsplit("/", 1)[-1],
+                "fileName": path.rsplit("/", 1)[-1],
+                "relativePath": path,
+            }
+        )
+        build["files"][path] = content
+
+    def ask(self, job: str, number: int, id: str, message: str) -> None:
+        base = f"/{self.path(job)}/{number}/input/{id}"
+        self.build_of(job, number)["inputs"].append(
+            {
+                "id": id,
+                "proceedText": "Proceed",
+                "message": message,
+                "inputs": [],
+                "proceedUrl": f"{base}/proceedEmpty",
+                "abortUrl": f"{base}/abort",
+                "redirectApprovalUrl": f"/{self.path(job)}/{number}/input/",
+            }
+        )
+
+    def leave(self, item: int, job: str, number: int) -> None:
+        self.waiting[item] = {
+            "_class": "hudson.model.Queue$LeftItem",
+            "id": item,
+            "cancelled": False,
+            "executable": {
+                "_class": RUN,
+                "number": number,
+                "url": f"{BASE}/{self.path(job)}/{number}/",
+            },
+        }
+
+    def cancel(self, item: int) -> None:
+        self.waiting[item] = {
+            "_class": "hudson.model.Queue$LeftItem",
+            "id": item,
+            "cancelled": True,
+            "executable": None,
+        }
+
+    def text_of(self, build: dict) -> bytes:
+        return "".join(f"{line}\n" for line in build["console"]).encode()
+
+    def progressive(self, path: str, start: int) -> tuple[str, int, bool]:
+        self.calls.append(("GET", path.strip("/"), {"start": start}))
+        name, number = self.locate(
+            path.strip("/").removesuffix("/logText/progressiveText")
+        )
+        build = self.items.get(name or "", {}).get("builds", {}).get(number or -1)
+
+        if build is None:
+            raise JenkinsError("jenkins: GET answered 404")
+
+        data = self.text_of(build)
+
+        return data[start:].decode(), len(data), bool(build["building"])
+
+    def stream(self, path: str, chunk: int = 65536):
+        self.calls.append(("GET", path.strip("/"), None))
+        route, _, file = path.strip("/").partition("/artifact/")
+        name, number = self.locate(route)
+        build = self.items.get(name or "", {}).get("builds", {}).get(number or -1)
+        content = (build or {}).get("files", {}).get(urllib.parse.unquote(file))
+
+        if content is None:
+            raise JenkinsError("jenkins: GET answered 404")
+
+        for i in range(0, len(content), chunk):
+            yield content[i : i + chunk]
 
     def path(self, name: str) -> str:
         return "/".join(f"job/{p}" for p in name.split("/"))
@@ -107,19 +305,6 @@ class FakeJenkins(JenkinsHttp):
 
         return self.handle(method, route, q)
 
-    def lines(self, path: str, limit: int) -> tuple[list[str], int]:
-        self.calls.append(("GET", path.strip("/"), {"limit": limit}))
-        route = path.strip("/").removesuffix("/consoleText")
-        name, number = self.locate(route)
-        build = self.items.get(name or "", {}).get("builds", {}).get(number or -1)
-
-        if build is None:
-            raise JenkinsError("jenkins: GET answered 404")
-
-        text = build["console"]
-
-        return text[-limit:], len(text)
-
     def locate(self, route: str) -> tuple[str | None, int | None]:
         parts = route.split("/")
         names = (
@@ -138,6 +323,47 @@ class FakeJenkins(JenkinsHttp):
     def handle(self, method: str, route: str, q: dict) -> Response:
         if route.startswith("role-strategy/"):
             return self.roles_handle(route, q)
+
+        if route == "crumbIssuer/api/json":
+            return Response(
+                200,
+                {
+                    "_class": "hudson.security.csrf.DefaultCrumbIssuer",
+                    "crumb": "c1",
+                    "crumbRequestField": "Jenkins-Crumb",
+                },
+            )
+
+        if method == "POST":
+            return self.queue_build(route, q)
+
+        found = re.fullmatch(r"queue/item/(\d+)/api/json", route)
+
+        if found and "tree" in q:
+            item = self.waiting.get(int(found.group(1)))
+
+            if item is None:
+                return Response(404, "<html>Not Found</html>")
+
+            return Response(200, item)
+
+        if route == "computer/api/json" and "tree" in q:
+            return Response(
+                200, {"_class": "hudson.model.ComputerSet", "computer": self.computers}
+            )
+
+        for suffix in (
+            "/wfapi/describe",
+            "/wfapi/pendingInputActions",
+            "/testReport/api/json",
+        ):
+            if route.endswith(suffix):
+                return self.run_detail(route.removesuffix(suffix), suffix)
+
+        found = re.fullmatch(r"(.+)/execution/node/([^/]+)/wfapi/log", route)
+
+        if found:
+            return self.node_log(found.group(1), urllib.parse.unquote(found.group(2)))
 
         if route == "queue/api/json":
             return Response(
@@ -166,7 +392,7 @@ class FakeJenkins(JenkinsHttp):
             if build is None:
                 return Response(404, "<html>Not Found</html>")
 
-            return Response(200, {k: v for k, v in build.items() if k != "console"})
+            return Response(200, {k: v for k, v in build.items() if k not in HIDDEN})
 
         if name and name not in self.items:
             return Response(404, "<html>Not Found</html>")
@@ -181,7 +407,91 @@ class FakeJenkins(JenkinsHttp):
         if item["_class"] == FOLDER:
             return Response(200, {"_class": FOLDER, "jobs": self.children(name)})
 
-        return Response(200, self.describe(name))
+        out = self.describe(name)
+
+        if q["tree"].startswith("builds["):
+            builds = item["builds"]
+            limit = RANGE.search(q["tree"])
+            newest = sorted(builds, reverse=True)[
+                : int(limit.group(2)) if limit else None
+            ]
+            out["builds"] = [
+                {k: v for k, v in builds[n].items() if k not in HIDDEN} for n in newest
+            ]
+
+        return Response(200, out)
+
+    def build_route(self, route: str) -> dict | None:
+        name, number = self.locate(route)
+
+        return self.items.get(name or "", {}).get("builds", {}).get(number or -1)
+
+    def run_detail(self, route: str, suffix: str) -> Response:
+        build = self.build_route(route)
+
+        if build is None:
+            return Response(404, "<html>Not Found</html>")
+
+        if suffix == "/testReport/api/json":
+            if build["tests"] is None:
+                return Response(404, "<html>Not Found</html>")
+
+            return Response(200, build["tests"])
+
+        if suffix == "/wfapi/pendingInputActions":
+            return Response(200, build["inputs"])
+
+        return Response(
+            200,
+            {
+                "_links": {"self": {"href": f"/{route}/wfapi/describe"}},
+                "id": str(build["number"]),
+                "name": f"#{build['number']}",
+                "status": "IN_PROGRESS" if build["building"] else build["result"],
+                "startTimeMillis": build["timestamp"],
+                "durationMillis": build["duration"],
+                "stages": build["stages"],
+            },
+        )
+
+    def node_log(self, route: str, node: str) -> Response:
+        build = self.build_route(route)
+        found = (build or {}).get("nodes", {}).get(node)
+
+        if found is None:
+            return Response(404, "<html>Not Found</html>")
+
+        return Response(
+            200,
+            {
+                "nodeId": node,
+                "nodeStatus": found["status"],
+                "length": len(found["log"]),
+                "hasMore": False,
+                "text": found["log"],
+                "consoleUrl": f"/{route}/execution/node/{node}/log",
+            },
+        )
+
+    def queue_build(self, route: str, q: dict) -> Response:
+        job, _, verb = route.rpartition("/")
+        name, number = self.locate(job)
+
+        if verb not in ("build", "buildWithParameters") or number is not None:
+            return Response(404, "<html>Not Found</html>")
+
+        if name not in self.items:
+            return Response(404, "<html>Not Found</html>")
+
+        item = 100 + len(self.waiting)
+        self.waiting[item] = {
+            "_class": "hudson.model.Queue$WaitingItem",
+            "id": item,
+            "why": "In the quiet period.",
+            "params": dict(q),
+        }
+
+        return Response(201, "", {"location": f"{BASE}/queue/item/{item}/"})
 
     def children(self, folder: str) -> list[dict]:
         prefix = f"{folder}/" if folder else ""
