@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- **runner:** the Jenkins CIRunner, moved from the core and registered on the `action_platform.ci_runner` entry point, with stages, logs from an offset, tests, artifacts, the queue, executors and pending inputs
+
+### Breaking changes
+- needs action-platform 0.38 or later, whose core no longer carries a Jenkins runner
+- `jenkins_build` and `action-platform jenkins build` are aliases of `ci_run` / `ci run`: they answer the run with its parameters, causes and changes, and no longer the console; read it with `ci_log` / `ci log` (the `lines` argument is gone)
+- `jenkins_queue` and `action-platform jenkins queue` are aliases of `ci_queue` / `ci queue`: each item is `job`, `since` and `why`
+
 ## v0.1.0 — 2026-11-24
 
 ### Features
