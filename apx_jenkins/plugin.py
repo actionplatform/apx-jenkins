@@ -1,4 +1,4 @@
-"""The plugin: access on Jenkins' role-strategy, and the tools and commands that read jobs, builds and the queue."""
+"""The plugin: access on Jenkins' role-strategy, and the tools and commands that read jobs, builds and the queue. The CI runner (`runner.JenkinsRunner`) is registered on its own entry point."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from apx_jenkins.tools import register_tools
 class JenkinsPlugin(Plugin):
     slug = "jenkins"
     name = "Jenkins"
-    description = "Jenkins: access through Role-based Authorization Strategy, and read-only tools for jobs, builds and the queue"
-    min_core = "0.33"
+    description = "Jenkins: the CI runner for deploys and Run CI, access through Role-based Authorization Strategy, and read-only tools for jobs, builds and the queue"
+    min_core = "0.38"
     needs = [
         "net: the host of the url option",
         "env: AP_JENKINS_URL, AP_JENKINS_USER, AP_JENKINS_TOKEN (tools on a machine; the plugin's options are the fallback)",

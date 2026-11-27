@@ -1,12 +1,13 @@
-"""`action-platform jenkins …` — the same reads as the tools, from a terminal."""
+"""`action-platform jenkins …` — the jobs of a folder, and `build` / `queue` as aliases of `action-platform ci run` / `ci queue` on this plugin's runner."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import typer
+from action_platform.cli.commands import ci as ci_cmd
 
-from apx_jenkins.settings import connect
+from apx_jenkins.settings import SLUG, connect
 
 app = typer.Typer(help="Jenkins: jobs, builds, the queue.", no_args_is_help=True)
 options: Any | None = None
@@ -26,23 +27,12 @@ def jobs(
 def build(
     job: str,
     number: int = typer.Argument(0, help="Build number; the last when 0"),
-    lines: int = typer.Option(100, help="Console lines from the end"),
 ) -> None:
-    """One build and the tail of its console."""
-    b = connect(options).build(job, number, lines)
-    typer.echo(f"{b.name}\t{b.result}\t{b.started_at}\t{b.duration_s}s")
-    typer.echo(f"causes: {'; '.join(b.causes) or '-'}")
-    typer.echo(f"revision: {b.revision or '-'} {b.branch or ''}".rstrip())
-
-    if b.console_truncated:
-        typer.echo(f"console: last {len(b.console)} of {b.console_lines} lines")
-
-    for line in b.console:
-        typer.echo(line)
+    """One build, as `action-platform ci run`; its console is `action-platform ci log`."""
+    ci_cmd.run(job, number, SLUG)
 
 
 @app.command("queue")
 def queue() -> None:
-    """What waits in the build queue and why."""
-    for i in connect(options).queue():
-        typer.echo(f"{i.job}\t{i.since}\t{i.why or '-'}")
+    """What waits in the build queue and why, as `action-platform ci queue`."""
+    ci_cmd.queue(SLUG)

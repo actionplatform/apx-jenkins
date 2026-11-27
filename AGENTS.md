@@ -4,7 +4,7 @@ Rules an AI agent (or a new contributor) follows in this repository.
 
 ## What this is
 
-`apx-jenkins`, an Action Platform plugin: the access provider for Jenkins on Role-based Authorization Strategy (`access.py`), and `jenkins_*` tools and `action-platform jenkins` commands that read jobs, builds and the queue. The contract every plugin follows is `SPEC.md` in [apx-example](https://github.com/actionplatform/apx-example); read it before changing the shape of anything here.
+`apx-jenkins`, an Action Platform plugin: the Jenkins `CIRunner` the core deploys and runs CI through (`runner.py`, on the `action_platform.ci_runner` entry point), the access provider for Jenkins on Role-based Authorization Strategy (`access.py`), and `jenkins_*` tools and `action-platform jenkins` commands — `jenkins_build` and `jenkins_queue` are aliases of the core's `ci_run` and `ci_queue`. The contract every plugin follows is `SPEC.md` in [apx-example](https://github.com/actionplatform/apx-example); read it before changing the shape of anything here.
 
 ## Code
 
@@ -12,7 +12,7 @@ Rules an AI agent (or a new contributor) follows in this repository.
 - No comments inside function bodies; no test docstrings. Module docstrings say what the module is for.
 - `register` declares only: no I/O at import or in `register`. `access(options)` reads only `options`.
 - Never monkey-patch `action_platform.*`.
-- Talk to Jenkins through `client.JenkinsHttp` only; tests drive `tests/fake.py`, never the network. The fake answers only what Jenkins answers.
+- Talk to Jenkins through `client.JenkinsHttp` only, the runner included; tests drive `tests/fake.py`, never the network. The fake answers only what Jenkins answers.
 - Tools and commands are read-only. `tests/live/` is read-only too and runs only with `AP_JENKINS_LIVE=1` and `AP_JENKINS_URL`, `AP_JENKINS_USER`, `AP_JENKINS_TOKEN` set.
 - Never print or commit a credential or a host.
 

@@ -1,14 +1,15 @@
-"""`jenkins_*` MCP tools: read-only looks at jobs, builds and the queue."""
+"""`jenkins_*` MCP tools: the jobs of a folder, and `jenkins_build` / `jenkins_queue` as aliases of the core's `ci_run` / `ci_queue` on this plugin's runner."""
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
 from action_platform.mcp.annotations import READ_ONLY
+from action_platform.plugins import ci
 from pydantic import Field
 
-from apx_jenkins.models import Build, Job, QueueItem
-from apx_jenkins.settings import connect
+from apx_jenkins.models import Job
+from apx_jenkins.settings import SLUG, connect
 
 
 def register_tools(mcp: Any, options: Any) -> None:
@@ -25,15 +26,11 @@ def register_tools(mcp: Any, options: Any) -> None:
     def build(
         job: Annotated[str, Field(description="Job path such as team/app/main")],
         number: Annotated[int, Field(description="Build number; 0 for the last")] = 0,
-        lines: Annotated[
-            int,
-            Field(description="Console lines to return from the end", ge=0, le=2000),
-        ] = 100,
-    ) -> Build:
-        """One build: result, duration, what started it, the revision and the tail of its console."""
-        return connect(options).build(job, number, lines)
+    ) -> dict[str, Any]:
+        """Alias of ci_run on Jenkins: one build's status, timing, parameters, causes and changes; its console is ci_log."""
+        return ci.run(ci.runner(SLUG, options), job, number)
 
     @mcp.tool(annotations=READ_ONLY)
-    def queue() -> list[QueueItem]:
-        """What waits in the build queue and why."""
-        return connect(options).queue()
+    def queue() -> list[dict[str, Any]]:
+        """Alias of ci_queue on Jenkins: what waits in the build queue, since when and why."""
+        return ci.queue(ci.runner(SLUG, options))

@@ -3,11 +3,13 @@
 import os
 import unittest
 
+from action_platform.core.exception import ProviderError
 from action_platform.core.service_access import Access
 from action_platform.testing.access import MemoryDirectory
 
 from apx_jenkins.access import JenkinsProvider
 from apx_jenkins.client import Jenkins, connection
+from apx_jenkins.runner import JenkinsRunner
 
 URL, USER, TOKEN = (
     os.environ.get(f"AP_JENKINS_{k}", "") for k in ("URL", "USER", "TOKEN")
@@ -43,17 +45,31 @@ class LiveTest(unittest.TestCase):
         if found is None:
             self.skipTest("no job with a build")
 
-        build = self.jenkins.build(found.name, found.last_number, lines=5)
+        runner = JenkinsRunner(URL, TOKEN, USER)
+        run = runner.run(found.name, found.last_number)
+        chunk = runner.log(found.name, found.last_number)
 
-        self.assertEqual(build.number, found.last_number)
-        self.assertTrue(build.result)
-        self.assertLessEqual(len(build.console), 5)
-        self.assertGreaterEqual(build.console_lines, len(build.console))
-        self.assertEqual(self.jenkins.build(found.name, lines=0).console, [])
+        self.assertEqual(run.number, found.last_number)
+        self.assertTrue(run.status)
+        self.assertEqual(chunk.next_start, len(chunk.text.encode()))
+        self.assertEqual(
+            runner.log(found.name, found.last_number, chunk.next_start).text, ""
+        )
 
-    def test_the_queue_reads(self):
-        for item in self.jenkins.queue():
+        try:
+            stages = runner.stages(found.name, found.last_number)
+        except ProviderError:
+            stages = []
+
+        self.assertTrue(all(s.id and s.name for s in stages))
+
+    def test_the_queue_and_the_executors_read(self):
+        runner = JenkinsRunner(URL, TOKEN, USER)
+
+        for item in runner.queue():
             self.assertTrue(item.job)
+
+        self.assertTrue(all(e.node is not None for e in runner.executors()))
 
     def test_a_missing_job_is_a_clear_error(self):
         with self.assertRaisesRegex(Exception, "not found"):

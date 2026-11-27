@@ -1,8 +1,8 @@
 # apx-jenkins
 
-[Jenkins](https://www.jenkins.io) for [Action Platform](https://github.com/actionplatform/action-platform): access management through Role-based Authorization Strategy, and read-only tools for jobs, builds and the build queue.
+[Jenkins](https://www.jenkins.io) for [Action Platform](https://github.com/actionplatform/action-platform): the CI runner the platform deploys and runs CI through, access management through Role-based Authorization Strategy, and read-only tools for jobs, builds and the build queue.
 
-The access capability runs where the core runs service access: on a hosted platform whose API image carries this plugin, with the options filled under **Plugins** for the organization. The tools and commands run on the machine that installed it.
+The core does not know Jenkins: this plugin brings the Jenkins `CIRunner`, registered in the `action_platform.ci_runner` entry-point group, and the core resolves it by name wherever `run_by = "jenkins"` or a Jenkins CI host appears. The access capability runs where the core runs service access: on a hosted platform whose API image carries this plugin, with the options filled under **Plugins** for the organization. The tools and commands run on the machine that installed it.
 
 ## Install
 
@@ -18,10 +18,11 @@ Then fill the options under Plugins, Configure on the platform, or on a machine 
 | `user` | `AP_JENKINS_USER` | The Jenkins user id the token belongs to |
 | `token` | `AP_JENKINS_TOKEN` | That user's API token (user menu, Security, API Token) |
 
-On a machine the tools and commands read the environment variable first and the options file second. The access capability reads only the options, so a platform keeps the credentials sealed.
+On a machine the tools, the commands and the core's `ci_*` tools read the environment variable first and the options file second. The access capability reads only the options, so a platform keeps the credentials sealed.
 
 ### What the token needs
 
+- CI runner: read on the jobs it follows, and Item/Build on the jobs a deploy or Run CI starts.
 - Tools and commands: the user must be able to read the jobs, builds and queue it asks for. They never write.
 - Access: the user must be a Jenkins administrator (Overall/Administer), the [Role-based Authorization Strategy](https://plugins.jenkins.io/role-strategy/) plugin installed, and selected under Manage Jenkins, Security, Authorization. Without it the provider answers with what to install.
 
@@ -50,15 +51,31 @@ Item roles hold these permissions, each level including the one before it:
 - An administrator can never be the last one: a change that would leave Jenkins without a global `admin` is refused before anything is sent.
 - Older versions of role-strategy without the user and group assignment calls are served through the generic `assignRole`.
 
+## CI runner
+
+`apx_jenkins.runner.JenkinsRunner` implements the core's `CIRunner` contract on the controller's own API:
+
+| Method | Jenkins |
+|---|---|
+| `test` | `api/json?tree=mode` |
+| `runs`, `run` | `api/json` with `builds[…]`: status, branch and revision, `parameters`, `causes` (with the user id), `changeSets` |
+| `start`, `run_of` | `buildWithParameters` (or `build`) with the crumb, then the queue item until it becomes a build; a cancelled item is an error |
+| `stages` | `wfapi/describe`; parallel stages are listed as stages, `parent_id` stays empty since the endpoint does not say which stage holds them |
+| `log`, `log_stream` | `logText/progressiveText?start=` for the console, read no further than the window (`limit`, 256 KB by default) and cut after a line break, `next_start` and `more` from `X-Text-Size` and `X-More-Data`; `execution/node/{id}/wfapi/log` for one stage or step, windowed the same way. `log_stream` walks the console window by window without holding it |
+| `tests` | `testReport/api/json`; none when the build published no report |
+| `artifacts`, `artifact` | `artifacts[relativePath]` and `artifact/<path>`, streamed |
+| `queue`, `executors` | `queue/api/json`, `computer/api/json` |
+| `pending_inputs` | `wfapi/pendingInputActions` |
+
 ## Tools
 
-MCP tools `jenkins_*` and the same reads under `action-platform jenkins`. All are read-only.
+The core's `ci_runs`, `ci_run`, `ci_log` and `ci_queue` tools (and `action-platform ci …`) read Jenkins through the runner. This plugin adds `jenkins_*` tools and `action-platform jenkins` commands. All are read-only.
 
 | Tool | Command | Does |
 |---|---|---|
 | `jenkins_jobs` | `jenkins jobs [folder]` | The jobs of a folder, or of the root: kind, status and the last build's number, result, time and duration. Pass a job path to read that one job. |
-| `jenkins_build` | `jenkins build <job> [number] [--lines N]` | One build, the last when no number is given: result, duration, what started it, branch and revision, and the last `lines` of its console (default 100, at most 2000) with the total. |
-| `jenkins_queue` | `jenkins queue` | What waits in the build queue, since when and why. |
+| `jenkins_build` | `jenkins build <job> [number]` | Alias of `ci_run`: one build, the last when no number is given, with its parameters, causes and changes. The console is `ci_log`. |
+| `jenkins_queue` | `jenkins queue` | Alias of `ci_queue`: what waits in the build queue, since when and why. |
 
 A job is addressed by the path Jenkins shows in its URL without the `job/` segments: `team/app`, `team/app/main`.
 
