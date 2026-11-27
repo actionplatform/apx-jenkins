@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- **runner:** a log read never goes past its window (256 KB by default): the console is read window by window, never whole
 - **runner:** the Jenkins CIRunner, moved from the core and registered on the `action_platform.ci_runner` entry point, with stages, logs from an offset, tests, artifacts, the queue, executors and pending inputs
 
 ### Breaking changes

@@ -61,7 +61,7 @@ Item roles hold these permissions, each level including the one before it:
 | `runs`, `run` | `api/json` with `builds[…]`: status, branch and revision, `parameters`, `causes` (with the user id), `changeSets` |
 | `start`, `run_of` | `buildWithParameters` (or `build`) with the crumb, then the queue item until it becomes a build; a cancelled item is an error |
 | `stages` | `wfapi/describe`; parallel stages are listed as stages, `parent_id` stays empty since the endpoint does not say which stage holds them |
-| `log` | `logText/progressiveText?start=` for the console (`X-Text-Size`, `X-More-Data`), `execution/node/{id}/wfapi/log` for one stage or step |
+| `log`, `log_stream` | `logText/progressiveText?start=` for the console, read no further than the window (`limit`, 256 KB by default) and cut after a line break, `next_start` and `more` from `X-Text-Size` and `X-More-Data`; `execution/node/{id}/wfapi/log` for one stage or step, windowed the same way. `log_stream` walks the console window by window without holding it |
 | `tests` | `testReport/api/json`; none when the build published no report |
 | `artifacts`, `artifact` | `artifacts[relativePath]` and `artifact/<path>`, streamed |
 | `queue`, `executors` | `queue/api/json`, `computer/api/json` |
