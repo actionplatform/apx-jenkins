@@ -59,7 +59,7 @@ class Access(Store):
         kinds = {o.key: o.kind for o in JenkinsPlugin.options}
 
         self.assertEqual(kinds, {"url": "url", "user": "text", "token": "secret"})
-        self.assertEqual(JenkinsPlugin.min_core, "0.33")
+        self.assertEqual(JenkinsPlugin.min_core, "0.38")
 
 
 class Settings(Store):
@@ -94,17 +94,30 @@ class Surface(Store):
     def setUp(self):
         super().setUp()
         self.plugins = Plugins(
-            [Loaded(JenkinsPlugin(), "apx-jenkins", "0.1.0")],
+            [Loaded(JenkinsPlugin(), "apx-jenkins", "0.2.0")],
             PluginState(file=Path(self.tmp.name) / "plugins.json"),
         )
         registry._current = self.plugins
         self.addCleanup(registry.reset)
-        patch = mock.patch("apx_jenkins.settings.connection", lambda *a: world())
-        patch.start()
-        self.addCleanup(patch.stop)
+        fake = world()
+        for target in (
+            "apx_jenkins.settings.connection",
+            "apx_jenkins.runner.connection",
+        ):
+            patch = mock.patch(target, lambda *a: fake)
+            patch.start()
+            self.addCleanup(patch.stop)
         env = mock.patch.dict("os.environ", ENV)
         env.start()
         self.addCleanup(env.stop)
+
+    def call(self, mcp, name, args):
+        result = asyncio.run(mcp.call_tool(name, args))
+
+        if result.structured_content:
+            return result.structured_content.get("result", result.structured_content)
+
+        return [json.loads(c.text) for c in result.content]
 
     def test_tools_are_prefixed_and_read_only(self):
         from action_platform.mcp import server
@@ -119,33 +132,49 @@ class Surface(Store):
         self.assertTrue(tools["jenkins_build"].annotations.read_only_hint)
         self.assertTrue(tools["jenkins_queue"].annotations.read_only_hint)
 
-    def test_the_tools_answer(self):
+    def test_the_jobs_tool_answers(self):
         from action_platform.mcp import server
 
-        mcp = server.build()
-
-        jobs = asyncio.run(mcp.call_tool("jenkins_jobs", {"folder": "app"}))
-        build = asyncio.run(
-            mcp.call_tool("jenkins_build", {"job": "app/release", "lines": 2})
-        )
-        queue = asyncio.run(mcp.call_tool("jenkins_queue", {}))
+        jobs = asyncio.run(server.build().call_tool("jenkins_jobs", {"folder": "app"}))
 
         self.assertEqual(
             sorted(json.loads(c.text)["name"] for c in jobs.content),
             ["app/new", "app/nightly", "app/release"],
         )
+
+    def test_the_aliases_answer_as_the_generic_tools(self):
+        from action_platform.mcp import server
+
+        mcp = server.build()
+        build = self.call(mcp, "jenkins_build", {"job": "app/release", "number": 1})
+        latest = self.call(mcp, "jenkins_build", {"job": "app/release"})
+
         self.assertEqual(
-            json.loads(build.content[0].text)["console"], ["line 249", "line 250"]
+            build, self.call(mcp, "ci_run", {"job": "app/release", "number": 1})
         )
-        self.assertEqual(queue.content, [])
+        self.assertEqual((build["number"], build["status"]), (1, "failure"))
+        self.assertEqual(build["causes"][0]["user"], "ana")
+        self.assertEqual(latest["number"], 2)
+        self.assertEqual(
+            self.call(mcp, "jenkins_queue", {}), self.call(mcp, "ci_queue", {})
+        )
+        self.assertEqual(
+            self.call(mcp, "ci_log", {"job": "app/release", "number": 1})["text"],
+            "a\n",
+        )
 
 
 class Commands(Store):
     def setUp(self):
         super().setUp()
-        patch = mock.patch("apx_jenkins.settings.connection", lambda *a: world())
-        patch.start()
-        self.addCleanup(patch.stop)
+        fake = world()
+        for target in (
+            "apx_jenkins.settings.connection",
+            "apx_jenkins.runner.connection",
+        ):
+            patch = mock.patch(target, lambda *a: fake)
+            patch.start()
+            self.addCleanup(patch.stop)
         env = mock.patch.dict("os.environ", ENV)
         env.start()
         self.addCleanup(env.stop)
@@ -157,14 +186,15 @@ class Commands(Store):
         self.assertEqual(out.exit_code, 0, out.output)
         self.assertIn("app/release\tWorkflowJob\tsuccess\t#2 SUCCESS", out.output)
 
-    def test_build(self):
+    def test_build_is_ci_run(self):
         out = self.run_cli(cli.app, ["build", "app/release", "1"])
 
         self.assertEqual(out.exit_code, 0, out.output)
-        self.assertIn("FAILURE", out.output)
-        self.assertIn("causes: Started by user ana", out.output)
+        build = json.loads(out.output)
+        self.assertEqual((build["number"], build["status"]), (1, "failure"))
+        self.assertEqual(build["causes"][0]["description"], "Started by user ana")
 
     def test_queue_empty(self):
         out = self.run_cli(cli.app, ["queue"])
 
-        self.assertEqual((out.exit_code, out.output), (0, ""))
+        self.assertEqual((out.exit_code, json.loads(out.output)), (0, []))
