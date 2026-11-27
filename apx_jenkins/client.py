@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import copy
 import urllib.error
 import urllib.parse
@@ -61,15 +62,29 @@ class JenkinsHttp(Http):
                 f"jenkins: cannot reach {urllib.parse.urlsplit(self.base).netloc}: {e.reason}"
             ) from e
 
-    def progressive(self, path: str, start: int) -> tuple[str, int, bool]:
-        """A console from byte `start`: its text, the offset to resume from (`X-Text-Size`) and whether the build still writes (`X-More-Data`)."""
-        with self._open(path, {"start": start}) as res:
-            charset = res.headers.get_content_charset() or "utf-8"
-            text = res.read().decode(charset, errors="replace")
-            size = int(res.headers.get("X-Text-Size") or start + len(text.encode()))
-            more = (res.headers.get("X-More-Data") or "").lower() == "true"
+    def read_bytes(
+        self, path: str, query: Optional[dict[str, Any]], limit: int
+    ) -> tuple[bytes, dict[str, str], str]:
+        """At most `limit + 1` bytes of an answer — one past the window says whether more follows — with its headers and charset; the rest is never read."""
+        with self._open(path, query) as res:
+            data = res.read(limit + 1)
+            headers = {k.lower(): v for k, v in res.headers.items()}
 
-        return text, size, more
+            return data, headers, res.headers.get_content_charset() or "utf-8"
+
+    def progressive(self, path: str, start: int, limit: int) -> tuple[str, int, bool]:
+        """At most `limit` bytes of a console from byte `start`: the text, the offset to resume from and whether more follows — beyond the window, or because the build still writes (`X-More-Data`)."""
+        data, headers, charset = self.read_bytes(path, {"start": start}, limit)
+        size = headers.get("x-text-size")
+
+        return window(
+            data,
+            start,
+            int(size) if size else None,
+            (headers.get("x-more-data") or "").lower() == "true",
+            limit,
+            charset,
+        )
 
     def stream(self, path: str, chunk: int = 65536) -> Iterator[bytes]:
         """A file's bytes as they arrive."""
@@ -81,6 +96,30 @@ class JenkinsHttp(Http):
                     return
 
                 yield block
+
+
+def window(
+    data: bytes,
+    start: int,
+    size: Optional[int],
+    writing: bool,
+    limit: int,
+    charset: str = "utf-8",
+) -> tuple[str, int, bool]:
+    """The text of at most `limit` bytes read from `start`, cut after the last line break when more follows and whole characters only, the offset after it and whether more follows."""
+    beyond = len(data) > limit or (
+        size is not None and start + min(len(data), limit) < size
+    )
+    data = data[:limit]
+
+    if beyond and b"\n" in data:
+        data = data[: data.rfind(b"\n") + 1]
+
+    decoder = codecs.getincrementaldecoder(charset)(errors="replace")
+    text = decoder.decode(data)
+    pending = decoder.getstate()[0]
+
+    return text, start + len(data) - len(pending), writing or beyond or bool(pending)
 
 
 def connection(url: str, user: str, token: str) -> JenkinsHttp:

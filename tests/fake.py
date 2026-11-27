@@ -30,6 +30,7 @@ class FakeJenkins(JenkinsHttp):
         self.queued: list[dict] = []
         self.waiting: dict[int, dict] = {}
         self.computers: list[dict] = []
+        self.read = 0
         self.status = 0
         self.last_query = ""
 
@@ -258,8 +259,9 @@ class FakeJenkins(JenkinsHttp):
     def text_of(self, build: dict) -> bytes:
         return "".join(f"{line}\n" for line in build["console"]).encode()
 
-    def progressive(self, path: str, start: int) -> tuple[str, int, bool]:
-        self.calls.append(("GET", path.strip("/"), {"start": start}))
+    def read_bytes(self, path: str, query: dict, limit: int):
+        start = int(query["start"])
+        self.calls.append(("GET", path.strip("/"), {"start": start, "limit": limit}))
         name, number = self.locate(
             path.strip("/").removesuffix("/logText/progressiveText")
         )
@@ -269,8 +271,18 @@ class FakeJenkins(JenkinsHttp):
             raise JenkinsError("jenkins: GET answered 404")
 
         data = self.text_of(build)
+        headers = {
+            "content-type": "text/plain;charset=UTF-8",
+            "x-text-size": str(len(data)),
+        }
 
-        return data[start:].decode(), len(data), bool(build["building"])
+        if build["building"]:
+            headers["x-more-data"] = "true"
+
+        sent = data[start : start + limit + 1]
+        self.read += len(sent)
+
+        return sent, headers, "utf-8"
 
     def stream(self, path: str, chunk: int = 65536):
         self.calls.append(("GET", path.strip("/"), None))

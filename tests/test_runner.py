@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from action_platform import Config
-from action_platform.abc.ci_runner import Stage, stage_tuples
+from action_platform.abc.ci_runner import LOG_WINDOW, Stage, stage_tuples
 from action_platform.core.context import Cause, Change, Context, RunRef
 from action_platform.core.exception import DeployError, ProviderError
 from action_platform.providers.ci import build_ci_runner
@@ -126,6 +126,82 @@ class Logs(unittest.TestCase):
     def test_an_unknown_node_is_a_provider_error(self):
         with self.assertRaises(ProviderError):
             self.ci.log("team/app", 7, node="99")
+
+
+class LargeConsole(unittest.TestCase):
+    def setUp(self):
+        self.fake = world()
+        self.lines = [f"step {n:06d} " + "x" * 90 for n in range(60_000)]
+        self.fake.run("team/app", 20, "SUCCESS", ["Started by timer"], self.lines)
+        self.whole = "".join(f"{line}\n" for line in self.lines)
+        self.ci = JenkinsRunner(http=self.fake)
+
+    def test_one_read_stays_within_the_window(self):
+        chunk = self.ci.log("team/app", 20, limit=65536)
+
+        self.assertLessEqual(self.fake.read, 65537)
+        self.assertLessEqual(len(chunk.text.encode()), 65536)
+        self.assertTrue(chunk.text.endswith("\n"))
+        self.assertTrue(chunk.more)
+        self.assertEqual(chunk.next_start, len(chunk.text.encode()))
+
+    def test_the_default_window_bounds_a_read(self):
+        chunk = self.ci.log("team/app", 20)
+
+        self.assertLessEqual(len(chunk.text.encode()), LOG_WINDOW)
+        self.assertGreater(len(self.whole), 20 * LOG_WINDOW)
+
+    def test_the_stream_gives_back_the_whole_console_window_by_window(self):
+        reads = []
+        text = []
+
+        for chunk in self.ci.log_stream("team/app", 20, limit=262144):
+            reads.append(len(chunk.text.encode()))
+            text.append(chunk.text)
+
+        self.assertEqual("".join(text), self.whole)
+        self.assertLessEqual(max(reads), 262144)
+        self.assertGreater(len(reads), 20)
+        self.assertTrue(all(t.endswith("\n") for t in text))
+
+    def test_the_last_window_says_nothing_more(self):
+        start = len(self.whole.encode()) - 100
+        chunk = self.ci.log("team/app", 20, start=start, limit=4096)
+
+        self.assertEqual(chunk.next_start, len(self.whole.encode()))
+        self.assertFalse(chunk.more)
+
+    def test_a_window_never_splits_a_character(self):
+        self.fake.run("team/app", 21, "SUCCESS", [], ["ação" * 5000])
+        data = ("ação" * 5000 + "\n").encode()
+        start, text = 0, []
+
+        while True:
+            chunk = self.ci.log("team/app", 21, start=start, limit=1001)
+            text.append(chunk.text)
+
+            if not chunk.more:
+                break
+
+            start = chunk.next_start
+
+        self.assertEqual("".join(text).encode(), data)
+
+    def test_a_running_build_has_more_once_caught_up(self):
+        self.fake.run("team/app", 22, None, [], ["a", "b"])
+        chunk = self.ci.log("team/app", 22, start=4)
+
+        self.assertEqual((chunk.text, chunk.next_start, chunk.more), ("", 4, True))
+
+    def test_a_stage_log_is_windowed_too(self):
+        self.fake.stage("team/app", 20, "30", "Big", "SUCCESS", log="line\n" * 1000)
+
+        first = self.ci.log("team/app", 20, node="30", limit=100)
+        rest = list(self.ci.log_stream("team/app", 20, first.next_start, "30", 100))
+
+        self.assertEqual(len(first.text), 100)
+        self.assertTrue(first.more)
+        self.assertEqual(first.text + "".join(c.text for c in rest), "line\n" * 1000)
 
 
 class Reports(unittest.TestCase):

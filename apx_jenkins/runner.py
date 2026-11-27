@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 from action_platform.abc.ci_runner import (
+    LOG_WINDOW,
     Artifact,
     CIRunner,
     Executor,
@@ -29,7 +30,7 @@ from action_platform.core.exception import (
 )
 from action_platform.core.service_access import Response
 
-from apx_jenkins.client import JenkinsHttp, connection, job_path
+from apx_jenkins.client import JenkinsHttp, connection, job_path, window
 
 BUILD = (
     "number,result,building,timestamp,duration,url,displayName,"
@@ -288,10 +289,17 @@ class JenkinsRunner(CIRunner):
         ]
 
     def log(
-        self, job: str, number: int, start: int = 0, node: Optional[str] = None
+        self,
+        job: str,
+        number: int,
+        start: int = 0,
+        node: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> LogChunk:
-        """The console from byte `start` through `logText/progressiveText`, or the log of one stage or step through `execution/node/{id}/wfapi/log`."""
+        """At most `limit` bytes (`LOG_WINDOW` when None) of the console from byte `start` through `logText/progressiveText`, read no further than the window; or of one stage or step through `execution/node/{id}/wfapi/log`, which Jenkins already bounds."""
         base = self._build(job, number)
+        limit = max(1, int(limit or LOG_WINDOW))
+        start = max(0, int(start))
 
         if node:
             data = (
@@ -301,22 +309,25 @@ class JenkinsRunner(CIRunner):
                 )
                 or {}
             )
-            text = str(data.get("text") or "")
-
-            return LogChunk(
-                text=text[start:],
-                next_start=len(text),
-                more=data.get("nodeStatus") in RUNNING_NODES,
+            raw = str(data.get("text") or "").encode()
+            text, end, more = window(
+                raw[start : start + limit + 1],
+                start,
+                len(raw),
+                data.get("nodeStatus") in RUNNING_NODES,
+                limit,
             )
 
+            return LogChunk(text=text, next_start=end, more=more)
+
         try:
-            text, size, more = self.http.progressive(
-                f"{base}/logText/progressiveText", int(start)
+            text, end, more = self.http.progressive(
+                f"{base}/logText/progressiveText", start, limit
             )
         except ActionPlatformError as e:
             raise ProviderError(str(e)) from e
 
-        return LogChunk(text=text, next_start=size, more=more)
+        return LogChunk(text=text, next_start=end, more=more)
 
     def tests(self, job: str, number: int) -> Optional[TestReport]:
         res = self._send("GET", f"{self._build(job, number)}/testReport/api/json")
