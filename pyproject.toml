@@ -1,6 +1,6 @@
 [project]
 name = "apx-jenkins"
-version = "0.1.0"
+version = "0.2.0"
 description = "Jenkins for Action Platform: the CI runner deploys and Run CI go through, access management through Role-based Authorization Strategy, and read-only tools for jobs."
 readme = "README.md"
 license = "Apache-2.0"

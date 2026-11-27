@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.0 — 2026-11-27
+
+### Breaking Changes
+- **runner:** the Jenkins CIRunner, moved from the core; jenkins_build/queue alias ci_* (#6)
+
+### Docs
+- blank line
+- where the access capability runs
+- install from the tag until the package is on PyPI; where access runs
+
 ## Unreleased
 
 ### Features
